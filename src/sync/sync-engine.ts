@@ -33,11 +33,15 @@ export class SyncEngine {
     log.info({ mode, since: since?.toISOString(), outDir: opts.outDir }, 'Starting sync')
 
     // 4. Collect recordings to process
+    // For backfill mode, always enumerate ALL recordings (no limit on listing)
+    // so that old recordings deep in pagination are included.
+    // The limit only caps how many get re-downloaded, not how many are listed.
+    const listLimit = mode === 'backfill' ? undefined : opts.limit
     const toProcess: PlaudRecording[] = []
     const skipped: PlaudRecording[] = []
     let listCount = 0
 
-    for await (const recording of client.listRecordings({ since, limit: opts.limit })) {
+    for await (const recording of client.listRecordings({ since, limit: listLimit })) {
       listCount++
       if (mode === 'sync' && !tracker.needsDownload(recording)) {
         skipped.push(recording)
