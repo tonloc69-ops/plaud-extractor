@@ -342,7 +342,7 @@ export class PlaudApiClient implements PlaudClient {
 //   { data_file_list: [{ ...above... + trans_result: [...segments...], ai_content: {...} }] }
 //
 // trans_result segment shape:
-//   { speaker: string, text: string, start_time_ms: number, end_time_ms: number }
+//   { speaker: string, content: string, start_time: number (centiseconds), end_time: number (centiseconds) }
 //
 // GET /file/temp-url/<id> response:
 //   { temp_url: "https://s3.amazonaws.com/...?X-Amz-..." }
@@ -412,14 +412,23 @@ function normalizeTranscript(raw: unknown, recordingId: string): PlaudTranscript
   const transResult = r['trans_result']
   const segmentsRaw = Array.isArray(transResult) ? transResult as AnyObject[] : []
 
-  const segments = segmentsRaw.map((s, i) => ({
-    index: i,
-    startMs: Number(s['start_time_ms'] ?? s['startMs'] ?? s['startTime'] ?? 0),
-    endMs: Number(s['end_time_ms'] ?? s['endMs'] ?? s['endTime'] ?? 0),
-    speaker: stringOrUndefined(s['speaker']),
-    text: String(s['text'] ?? '').trim(),
-    confidence: undefined,
-  }))
+  const segments = segmentsRaw.map((s, i) => {
+    // Plaud API uses 'content' for text and centisecond timestamps
+    const startRaw = Number(s['start_time_ms'] ?? s['start_time'] ?? s['startMs'] ?? s['startTime'] ?? 0)
+    const endRaw = Number(s['end_time_ms'] ?? s['end_time'] ?? s['endMs'] ?? s['endTime'] ?? 0)
+    // If values look like centiseconds (< 1_000_000), convert to ms; otherwise use as-is
+    const startMs = startRaw < 1_000_000 ? startRaw * 10 : startRaw
+    const endMs = endRaw < 1_000_000 ? endRaw * 10 : endRaw
+
+    return {
+      index: i,
+      startMs,
+      endMs,
+      speaker: stringOrUndefined(s['speaker']),
+      text: String(s['content'] ?? s['text'] ?? '').trim(),
+      confidence: undefined,
+    }
+  })
 
   const fullText = segments.map(s => s.text).filter(Boolean).join('\n\n')
   // duration field from POST /file/list is in milliseconds — convert to seconds
