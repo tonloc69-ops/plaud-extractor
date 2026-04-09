@@ -64,10 +64,17 @@ export interface PlaudClient {
     startTime: Date
     fileType?: 'MP3' | 'AAC' | 'OPUS'
   }): Promise<Record<string, unknown>>
-  triggerTranscription(fileId: string, language?: string): Promise<void>
+  triggerTranscription(fileId: string, language?: string, opts?: {
+    summaryTemplate?: string
+    summaryTemplateType?: 'custom' | 'system'
+    llm?: string
+  }): Promise<void>
   pollTranscription(fileId: string, opts?: {
     language?: string
     timeoutMs?: number
     pollIntervalMs?: number
+    summaryTemplate?: string
+    summaryTemplateType?: 'custom' | 'system'
+    llm?: string
   }): Promise<Record<string, unknown>>
 }

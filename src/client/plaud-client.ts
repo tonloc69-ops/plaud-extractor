@@ -198,19 +198,33 @@ export class PlaudApiClient implements PlaudClient {
 
   /**
    * Trigger transcription + AI summary for an uploaded recording.
+   *
+   * @param summaryTemplate - Custom summary template ID. Defaults to Tony's
+   *   custom ADHD-friendly template that produces TL;DR, attendees, action items.
+   *   Pass 'REASONING-NOTE' for the generic system template.
+   * @param llm - LLM to use for summary. Defaults to 'gpt-5.2' matching
+   *   existing Plaud recordings.
    */
-  async triggerTranscription(fileId: string, language = 'en'): Promise<void> {
+  async triggerTranscription(fileId: string, language = 'en', opts?: {
+    summaryTemplate?: string
+    summaryTemplateType?: 'custom' | 'system'
+    llm?: string
+  }): Promise<void> {
     const log = getLogger()
-    log.info({ fileId, language }, 'Triggering transcription')
+    const template = opts?.summaryTemplate ?? '449738fb59f082b657635c410319b90b'
+    const templateType = opts?.summaryTemplateType ?? 'custom'
+    const llm = opts?.llm ?? 'gpt-5.2'
+
+    log.info({ fileId, language, template, llm }, 'Triggering transcription')
     const url = buildFileDetailUrl(this.endpoints, fileId)
     await this.http.patch(url, {
       extra_data: {
         tranConfig: {
           language,
-          type_type: 'system',
-          type: 'REASONING-NOTE',
+          type_type: templateType,
+          type: template,
           diarization: 1,
-          llm: 'auto',
+          llm,
         },
       },
     })
@@ -224,11 +238,17 @@ export class PlaudApiClient implements PlaudClient {
     language?: string
     timeoutMs?: number
     pollIntervalMs?: number
+    summaryTemplate?: string
+    summaryTemplateType?: 'custom' | 'system'
+    llm?: string
   }): Promise<Record<string, unknown>> {
     const log = getLogger()
     const language = opts?.language ?? 'en'
     const timeoutMs = opts?.timeoutMs ?? 500_000
     const pollIntervalMs = opts?.pollIntervalMs ?? 10_000
+    const template = opts?.summaryTemplate ?? '449738fb59f082b657635c410319b90b'
+    const templateType = opts?.summaryTemplateType ?? 'custom'
+    const llm = opts?.llm ?? 'gpt-5.2'
 
     const deadline = Date.now() + timeoutMs
     const url = buildTransSummUrl(this.endpoints, fileId)
@@ -236,12 +256,12 @@ export class PlaudApiClient implements PlaudClient {
     while (Date.now() < deadline) {
       const result = await this.http.post<Record<string, unknown>>(url, {
         is_reload: 0,
-        summ_type: 'REASONING-NOTE',
-        summ_type_type: 'system',
+        summ_type: template,
+        summ_type_type: templateType,
         info: JSON.stringify({
           language,
           diarization: 1,
-          llm: 'auto',
+          llm,
         }),
         support_mul_summ: true,
       })
