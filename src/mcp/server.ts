@@ -8,6 +8,7 @@ import { defaultOutDir, runLogsPath } from '../storage/paths.js'
 import { setLogger } from '../logger.js'
 import { registerReadTools } from './read-tools.js'
 import { registerJobTools } from './job-tools.js'
+import { registerUploadTools } from './upload-tools.js'
 
 const rawDir = process.env['ALTA_DATA_DIR']
 const outDir = rawDir
@@ -34,6 +35,7 @@ const server = new McpServer({
 
 registerReadTools(server, outDir)
 registerJobTools(server, outDir)
+registerUploadTools(server, outDir)
 
 const transport = new StdioServerTransport()
 await server.connect(transport)

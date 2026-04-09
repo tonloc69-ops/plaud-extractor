@@ -47,6 +47,28 @@ export function buildProfileUrl(map: EndpointMap): string {
   return map.userProfile ?? `${API_BASE(map)}/user/me`
 }
 
+// ─── Upload endpoints ─────────────────────────────────────────────────────────
+
+export function buildUploadPresignedUrl(map: EndpointMap): string {
+  return `${API_BASE(map)}/file/get_upload_presigned_url`
+}
+
+export function buildMergeMultipartUrl(map: EndpointMap): string {
+  return `${API_BASE(map)}/file/merge_multipart`
+}
+
+export function buildConfirmUploadUrl(map: EndpointMap): string {
+  return `${API_BASE(map)}/file/confirm_upload`
+}
+
+export function buildFileDetailUrl(map: EndpointMap, fileId: string): string {
+  return `${API_BASE(map)}/file/${fileId}`
+}
+
+export function buildTransSummUrl(map: EndpointMap, fileId: string): string {
+  return `${API_BASE(map)}/ai/transsumm/${fileId}`
+}
+
 /**
  * Discover the correct regional API base URL by hitting the global endpoint.
  * The global api.plaud.ai returns a region-redirect response:

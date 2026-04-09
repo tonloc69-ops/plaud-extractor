@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+import crypto from 'node:crypto'
 import { ApiError, AuthError } from '../errors.js'
 import { getLogger } from '../logger.js'
 import type { StoredCredentials } from '../auth/types.js'
@@ -6,6 +8,11 @@ import {
   buildBatchDetailUrl,
   buildAudioTempUrl,
   buildProfileUrl,
+  buildUploadPresignedUrl,
+  buildMergeMultipartUrl,
+  buildConfirmUploadUrl,
+  buildFileDetailUrl,
+  buildTransSummUrl,
   extractRegionalBaseUrl,
   type EndpointMap,
 } from './endpoints.js'
@@ -110,6 +117,196 @@ export class PlaudApiClient implements PlaudClient {
 
   getHttpClient(): HttpClient {
     return this.http
+  }
+
+  // ─── Upload ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Upload an audio file to Plaud using the 4-step presigned S3 flow.
+   *
+   * Returns the newly created recording object from the API.
+   */
+  async upload(filePath: string, opts: {
+    title: string
+    startTime: Date
+    fileType?: 'MP3' | 'AAC' | 'OPUS'
+  }): Promise<Record<string, unknown>> {
+    const log = getLogger()
+    const fileBuffer = fs.readFileSync(filePath)
+    const fileSize = fileBuffer.byteLength
+    const fileType = opts.fileType ?? 'MP3'
+
+    // Step 1: Get presigned upload URL
+    log.info({ filePath, fileSize, fileType }, 'Upload step 1: getting presigned URL')
+    const presignedUrl = buildUploadPresignedUrl(this.endpoints)
+    const presignedResp = await this.http.post<Record<string, unknown>>(presignedUrl, {
+      filesize: fileSize,
+      file_type: fileType,
+    })
+
+    const presignedData = (presignedResp as Record<string, unknown>).data as Record<string, unknown>
+    const partUrls = presignedData.part_urls as string[]
+    const uploadId = presignedData.upload_id as string
+    const objectName = presignedData.object_name as string
+
+    if (!partUrls?.[0] || !uploadId || !objectName) {
+      throw new ApiError('Presigned URL response missing required fields', 0)
+    }
+
+    // Step 2: PUT raw bytes to S3
+    log.info({ uploadId }, 'Upload step 2: uploading to S3')
+    const s3Resp = await this.http.putRaw(partUrls[0], fileBuffer, {
+      'Content-Type': 'application/octet-stream',
+    })
+    const etag = (s3Resp.headers.get('etag') ?? '').replace(/"/g, '')
+    if (!etag) {
+      throw new ApiError('S3 upload did not return ETag', 0)
+    }
+
+    // Step 3: Merge multipart
+    log.info({ uploadId, etag }, 'Upload step 3: merging multipart')
+    const mergeUrl = buildMergeMultipartUrl(this.endpoints)
+    await this.http.post(mergeUrl, {
+      upload_id: uploadId,
+      object_name: objectName,
+      parts: [{ Etag: etag, PartNumber: 1 }],
+    })
+
+    // Step 4: Confirm upload
+    const timestampMs = opts.startTime.getTime()
+    log.info({ uploadId, title: opts.title, timestampMs }, 'Upload step 4: confirming upload')
+    const confirmUrl = buildConfirmUploadUrl(this.endpoints)
+    const confirmResp = await this.http.post<Record<string, unknown>>(confirmUrl, {
+      upload_id: uploadId,
+      object_name: objectName,
+      scene: 101,
+      is_tmp: 0,
+      support_mul_summ: true,
+      file_type: fileType,
+      filename: opts.title,
+      start_time: timestampMs,
+      session_id: Math.floor(timestampMs / 1000),
+      serial_number: crypto.randomUUID(),
+    })
+
+    const recording = (confirmResp as Record<string, unknown>).data as Record<string, unknown>
+    log.info({ id: recording?.id, title: opts.title }, 'Upload complete')
+    return recording
+  }
+
+  // ─── Transcription ──────────────────────────────────────────────────────────
+
+  /**
+   * Trigger transcription + AI summary for an uploaded recording.
+   */
+  async triggerTranscription(fileId: string, language = 'en'): Promise<void> {
+    const log = getLogger()
+    log.info({ fileId, language }, 'Triggering transcription')
+    const url = buildFileDetailUrl(this.endpoints, fileId)
+    await this.http.patch(url, {
+      extra_data: {
+        tranConfig: {
+          language,
+          type_type: 'system',
+          type: 'REASONING-NOTE',
+          diarization: 1,
+          llm: 'auto',
+        },
+      },
+    })
+  }
+
+  /**
+   * Poll transcription status until complete or timeout.
+   * Returns the raw analysis result including trans_result and summary.
+   */
+  async pollTranscription(fileId: string, opts?: {
+    language?: string
+    timeoutMs?: number
+    pollIntervalMs?: number
+  }): Promise<Record<string, unknown>> {
+    const log = getLogger()
+    const language = opts?.language ?? 'en'
+    const timeoutMs = opts?.timeoutMs ?? 500_000
+    const pollIntervalMs = opts?.pollIntervalMs ?? 10_000
+
+    const deadline = Date.now() + timeoutMs
+    const url = buildTransSummUrl(this.endpoints, fileId)
+
+    while (Date.now() < deadline) {
+      const result = await this.http.post<Record<string, unknown>>(url, {
+        is_reload: 0,
+        summ_type: 'REASONING-NOTE',
+        summ_type_type: 'system',
+        info: JSON.stringify({
+          language,
+          diarization: 1,
+          llm: 'auto',
+        }),
+        support_mul_summ: true,
+      })
+
+      // Check if transcription is complete
+      const status = result.status as number | undefined
+      const dataResult = result.data_result as unknown[] | undefined
+      const dataSumm = result.data_result_summ as string | undefined
+
+      log.debug({ fileId, status, hasResult: !!dataResult, hasSumm: !!dataSumm }, 'Poll status')
+
+      // status === 0 with data_result means done
+      if (status === 0 && dataResult && dataResult.length > 0) {
+        log.info({ fileId }, 'Transcription complete')
+
+        // Save results back to Plaud
+        await this.saveTranscriptionResults(fileId, result)
+        return result
+      }
+
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs))
+    }
+
+    throw new ApiError(`Transcription for ${fileId} timed out after ${timeoutMs / 1000}s`, 0)
+  }
+
+  /**
+   * Save transcription results back to the recording (required to persist).
+   */
+  private async saveTranscriptionResults(fileId: string, analysisResult: Record<string, unknown>): Promise<void> {
+    const log = getLogger()
+    log.info({ fileId }, 'Saving transcription results')
+
+    const transResult = analysisResult.data_result ?? []
+    const rawAi = analysisResult.data_result_summ ?? ''
+    const outlineResult = analysisResult.outline_result ?? []
+
+    let aiContent: unknown = rawAi
+    let aiContentHeader: Record<string, unknown> = {}
+
+    if (typeof rawAi === 'string' && rawAi.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(rawAi) as Record<string, unknown>
+        if (parsed.markdown) {
+          aiContent = parsed.markdown
+        } else if (parsed.content && typeof parsed.content === 'object') {
+          aiContent = (parsed.content as Record<string, unknown>).markdown ?? rawAi
+        } else {
+          aiContent = parsed.summary ?? rawAi
+        }
+        aiContentHeader = (parsed.header ?? {}) as Record<string, unknown>
+      } catch { /* keep raw */ }
+    }
+
+    const url = buildFileDetailUrl(this.endpoints, fileId)
+    await this.http.patch(url, {
+      trans_result: transResult,
+      ai_content: aiContent,
+      outline_result: outlineResult,
+      support_mul_summ: true,
+      extra_data: {
+        task_id_info: (analysisResult as Record<string, unknown>).task_id_info ?? {},
+        aiContentHeader,
+      },
+    })
   }
 }
 

@@ -59,4 +59,15 @@ export interface PlaudClient {
   listRecordings(options?: ListOptions): AsyncGenerator<PlaudRecording>
   getTranscript(recordingId: string): Promise<PlaudTranscript>
   getAudioDownloadUrl(recordingId: string): Promise<string | null>
+  upload(filePath: string, opts: {
+    title: string
+    startTime: Date
+    fileType?: 'MP3' | 'AAC' | 'OPUS'
+  }): Promise<Record<string, unknown>>
+  triggerTranscription(fileId: string, language?: string): Promise<void>
+  pollTranscription(fileId: string, opts?: {
+    language?: string
+    timeoutMs?: number
+    pollIntervalMs?: number
+  }): Promise<Record<string, unknown>>
 }

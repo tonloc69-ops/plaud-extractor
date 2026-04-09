@@ -80,6 +80,40 @@ export class HttpClient {
     return res.body as unknown as AsyncIterable<Uint8Array>
   }
 
+  async patch<T>(url: string, body: unknown, init?: RequestInit): Promise<T> {
+    const log = getLogger()
+    log.debug({ url }, 'PATCH')
+
+    const res = await fetch(url, {
+      ...init,
+      method: 'PATCH',
+      headers: { ...this.buildHeaders(), ...(init?.headers as Record<string, string> | undefined) },
+      body: JSON.stringify(body),
+    })
+
+    await this.assertOk(res, url)
+    return res.json() as Promise<T>
+  }
+
+  /**
+   * PUT raw bytes to an external URL (e.g. S3 presigned upload).
+   * No Plaud auth headers - S3 presigned URLs reject extra headers.
+   * Returns the Response so callers can read ETag etc.
+   */
+  async putRaw(url: string, body: Buffer, headers?: Record<string, string>): Promise<Response> {
+    const log = getLogger()
+    log.debug({ url: url.split('?')[0] }, 'PUT (raw)')
+
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: headers ?? {},
+      body,
+    })
+
+    await this.assertOk(res, url)
+    return res
+  }
+
   /**
    * Download from an external URL (e.g. presigned S3) without Plaud auth headers.
    * S3 presigned URLs sign only the `host` header — sending extra headers breaks the request.
